@@ -13,13 +13,13 @@ import (
 )
 
 const (
-	v1 = "8.8.8.8:53"
-	v2 = "8.8.4.4:53"
-	v3 = "1.1.1.1:53"
-	v4 = "8.8.8.8:853"
+	DNSv1 = "8.8.8.8:53"
+	DNSv2 = "8.8.4.4:53"
+	DNSv3 = "1.1.1.1:53"
+	DNSv4 = "8.8.8.8:853"
 )
 
-func RequestToGoogleDNS(request []byte, qdcount int, che *cache.Cache, eDNS bool) ([]byte, error) {
+func RequestToGoogleDNS(request []byte, che *cache.Cache, eDNS bool) ([]byte, error) {
 	var size int
 	var netType string
 	if eDNS {
@@ -31,7 +31,7 @@ func RequestToGoogleDNS(request []byte, qdcount int, che *cache.Cache, eDNS bool
 	}
 
 	var conn net.Conn
-	for _, dns := range []string{v1, v2, v3, v4} {
+	for _, dns := range []string{DNSv1, DNSv2, DNSv3, DNSv4} {
 		var err error
 		conn, err = net.DialTimeout(netType, dns, 5*time.Second)
 		if err == nil {
@@ -42,10 +42,9 @@ func RequestToGoogleDNS(request []byte, qdcount int, che *cache.Cache, eDNS bool
 
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	_, errW := conn.Write(request)
-	if errW != nil {
-		log.Println("Error of sending request to google:", errW)
-		return nil, fmt.Errorf("error of sending request to google: %s", errW)
+	if _, err := conn.Write(request); err != nil {
+		log.Println("Error of sending request to google:", err)
+		return nil, fmt.Errorf("error of sending request to google: %s", err)
 	}
 
 	data := make([]byte, size)
@@ -55,8 +54,7 @@ func RequestToGoogleDNS(request []byte, qdcount int, che *cache.Cache, eDNS bool
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
 
-	resp := data[12:n]
-	if err := parseGoogleResponse(resp, qdcount, che); err != nil {
+	if err := parseGoogleResponse(data[:n], che); err != nil {
 		log.Println("Error parse answer from google:", err)
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
@@ -64,14 +62,31 @@ func RequestToGoogleDNS(request []byte, qdcount int, che *cache.Cache, eDNS bool
 	return data[:n], nil
 }
 
-func parseGoogleResponse(data []byte, qdcount int, che *cache.Cache) error {
-	start := 12
+func parseGoogleResponse(data []byte, che *cache.Cache) error {
+	header, err := message.HandleHeader(data[:12])
+	if err != nil {
+		return err
+	}
 
-	for range qdcount {
-		var name string
-		name, offset := skipQuestion(data, start) // здесь проблема
+	offset := 12
+	for range header.Qdcount {
+		var err error
+		_, offset, err = readName(data, offset, data)
+		if err != nil {
+			return err
+		}
+		offset += 4 // skip QClass and QType
+	}
+
+	for range header.Ancount {
+		name, newOffset, err := readName(data, offset, data)
+		if err != nil {
+			return err
+		}
+		offset = newOffset
+
 		if offset+10 > len(data) {
-			return fmt.Errorf("incorrect record format")
+			return fmt.Errorf("wrong answer's format")
 		}
 
 		Type := binary.BigEndian.Uint16(data[offset : offset+2])
@@ -80,98 +95,62 @@ func parseGoogleResponse(data []byte, qdcount int, che *cache.Cache) error {
 		length := binary.BigEndian.Uint16(data[offset+8 : offset+10])
 		offset += 10
 
-		log.Println(name)
-		log.Println(Class)
-		log.Println(Type)
-		log.Println(length)
-		log.Println(ttl)
-
-		if offset+int(length) > len(data) {
-			return fmt.Errorf("malformed DNS packet: answer data too short")
-		}
+		log.Println("name:", name)
+		log.Println("class:", Class)
+		log.Println("type:", Type)
+		log.Println("len:", length)
+		log.Println("ttl:", ttl)
 
 		var ip []byte
 		switch Type {
 		case uint16(message.A):
-			ip = data[offset : offset+3]
+			parsed := data[offset : offset+int(length)]
+			ip = net.IPv4(parsed[0], parsed[1], parsed[2], parsed[3]) // ???
 		case uint16(message.AAAA):
-			ip = data[offset : offset+16]
+			parsedIP := data[offset : offset+int(length)] // ???
+			ip = net.ParseIP(string(parsedIP))
 		default:
 			return fmt.Errorf("unsupported type of record")
 		}
+		log.Println("ip:", string(ip))
 		che.Set(ip, name, Class, Type, length, ttl)
+		offset += int(length)
 	}
 
 	return nil
 }
 
-func skipQuestion(data []byte, offset int) (string, int) {
-	domain := []string{}
+func readName(data []byte, offset int, origData []byte) (string, int, error) {
+	names := []string{}
 	visit := make(map[int]bool)
 
-	for {
+	for offset < len(data) {
 		length := int(data[offset])
 		if length == 0 {
-			break
+			return strings.Join(names, "."), offset + 1, nil
 		}
 
 		if length&0xC0 == 0xC0 {
-			if visit[offset] {
-				break
+			if offset+1 >= len(data) {
+				return "", offset, fmt.Errorf("wrong compression pointer")
 			}
-
-			visit[offset] = true
-			if len(domain) > 0 {
-				break
+			ptr := int(binary.BigEndian.Uint16(data[offset:offset+2]) & 0x3FFF)
+			if visit[ptr] {
+				return "", offset, fmt.Errorf("compression is cycled")
 			}
-			break
+			visit[ptr] = true
+			name, _, err := readName(data[ptr:], 0, origData)
+			if err != nil {
+				return "", offset, err
+			}
+			names = append(names, name)
+			return strings.Join(names, "."), offset + 2, nil
 		}
-
-		offset++
-		domain = append(domain, string(data[offset:offset+length]))
-		offset += length
-	}
-	name := strings.Join(domain, ".")
-	offset++
-
-	if offset+4 > len(data) {
-		return name, offset
-	}
-	offset += 4
-
-	return name, offset
-}
-
-func SkipQuestion(data []byte, offset int) (string, int) {
-	domain := []string{}
-	visit := make(map[int]bool)
-
-	for {
-		length := int(data[offset])
-		if length == 0 {
-			break
+		if offset+1+length > len(data) {
+			return "", offset, fmt.Errorf("wrong length of offset")
 		}
-
-		if length&0xC0 == 0xC0 {
-			if visit[offset] {
-				break
-			}
-
-			visit[offset] = true
-			if len(domain) > 0 {
-				break
-			}
-			break
-		}
-
-		offset++
-		domain = append(domain, string(data[offset:offset+length]))
-		offset += length
+		names = append(names, string(data[offset+1:offset+1+length]))
+		offset += 1 + length
 	}
-	name := strings.Join(domain, ".")
-	offset++
-
-	offset += 4
-
-	return name, offset
+	return "", offset, fmt.Errorf("unexpected EOF")
 }

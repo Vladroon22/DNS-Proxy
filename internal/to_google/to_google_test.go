@@ -23,7 +23,7 @@ func TestRequestToGoogle(t *testing.T) {
 	}
 
 	var conn net.Conn
-	for _, dns := range []string{v1, v2, v3, v4} {
+	for _, dns := range []string{DNSv1, DNSv2, DNSv3, DNSv4} {
 		var err error
 		conn, err = net.DialTimeout("udp", dns, time.Second*3)
 		if err == nil {

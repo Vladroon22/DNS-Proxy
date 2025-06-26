@@ -23,13 +23,15 @@ var cach = map[string]Answer{
 }
 */
 
-func BuildResponse(header Header, que Question, che *cache.Cache) []byte {
+func BuildResponse(header *Header, que Question, che *cache.Cache) []byte {
 	buffer := bytes.NewBuffer(nil)
 	cmp := compress.NewCompress()
 	mtx := sync.Mutex{}
 
 	mtx.Lock()
 	defer mtx.Unlock()
+
+	header.Ancount++
 
 	decodedHeader := header.Decode()
 	buffer.Write(decodedHeader)
@@ -56,28 +58,3 @@ func BuildResponse(header Header, que Question, che *cache.Cache) []byte {
 
 	return buffer.Bytes()
 }
-
-func HandleAdditional() {
-
-}
-
-//func handleAuthority() {}
-
-/*
-	if rd, ok := che[uint16(que.Type)][que.Name]; ok {
-		switch que.Type {
-		case A:
-			buffer.Write([]byte{0xC0, 0x0C})
-
-			binary.Write(buffer, binary.BigEndian, que.Type)
-			binary.Write(buffer, binary.BigEndian, que.Class)
-
-			ttl := make([]byte, 4)
-			binary.BigEndian.PutUint32(ttl, rd.TTL)
-			binary.Write(buffer, binary.BigEndian, ttl)
-
-			binary.Write(buffer, binary.BigEndian, rd.Length)
-			buffer.Write(rd.IP[:])
-		}
-	}
-*/

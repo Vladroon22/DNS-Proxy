@@ -31,14 +31,18 @@ func InitCache() *Cache {
 }
 
 func (c *Cache) Set(ip []byte, name string, class, tp, len uint16, ttl uint32) {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
 	if c.cache == nil {
 		c.cache = make(map[uint16]map[string]*Item)
 	}
 
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
+	if c.cache[tp] == nil {
+		c.cache[tp] = make(map[string]*Item)
+	}
 
-	itm := &Item{
+	item := &Item{
 		IP:     ip,
 		Name:   name,
 		Class:  class,
@@ -47,7 +51,7 @@ func (c *Cache) Set(ip []byte, name string, class, tp, len uint16, ttl uint32) {
 		Exp:    time.Duration(ttl),
 	}
 
-	c.cache[tp][name] = itm
+	c.cache[tp][name] = item
 }
 
 func (c *Cache) Get(tp uint16, dmn string) (Item, bool) {

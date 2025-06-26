@@ -81,12 +81,17 @@ func (s *Server) acceptUDP() error {
 			continue
 		}
 		log.Println("Request header:", header)
+		log.Println("questions:", header.Qdcount)
 
 		questions, n := message.HandleQuestions(buffer[12:b], header.Qdcount, caching)
+		log.Println("cache ques:", n)
 		if n > 1 {
 			for _, que := range questions {
 				log.Println("Cache question:", que)
 			}
+
+			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
+			header.Qdcount = uint16(n)
 
 			wg := sync.WaitGroup{}
 			wg.Add(n)
@@ -94,7 +99,7 @@ func (s *Server) acceptUDP() error {
 			for _, que := range questions {
 				go func(que message.Question) {
 					defer wg.Done()
-					respChan <- message.BuildResponse(header, que, caching)
+					respChan <- message.BuildResponse(&header, que, caching)
 				}(que)
 			}
 
@@ -103,20 +108,18 @@ func (s *Server) acceptUDP() error {
 				close(respChan)
 			}()
 
-			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
-			header.Ancount = uint16(n)
-			header.Qdcount = uint16(len(respChan))
-			header.Arcount = 0
-
 			for resp := range respChan {
 				response.Write(resp)
 			}
-
 		} else if n == 1 {
 			log.Println("Cache question:", questions)
-			response.Write(message.BuildResponse(header, questions[0], caching))
-		} else {
-			GoogleAnswer, err := to_google.RequestToGoogleDNS(buffer, int(header.Qdcount), caching, s.edns)
+			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
+			header.Ancount = uint16(n)
+			header.Qdcount = uint16(n)
+			header.Arcount = uint16(0)
+			response.Write(message.BuildResponse(&header, questions[0], caching))
+		} else if n == 0 {
+			GoogleAnswer, err := to_google.RequestToGoogleDNS(buffer, caching, s.edns)
 			if err != nil {
 				sendToClient([]byte(err.Error()), remote)
 				continue

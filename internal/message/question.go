@@ -2,16 +2,17 @@ package message
 
 import (
 	"encoding/binary"
+	"log"
 	"strings"
 	"sync"
 
 	"github.com/Vladroon22/DNS-Server/internal/cache"
 )
 
-type Type uint16
+type QType uint16
 
 const (
-	_     Type       = iota
+	_     QType      = iota
 	A                // a host address
 	NS               // an authoritative name server
 	MD               // a mail destination
@@ -31,20 +32,20 @@ const (
 	AAAA  = TXT + 12 // ipv6 address
 )
 
-type Class uint16
+type QClass uint16
 
 const (
-	_  Class = iota
-	IN       // the Internet
-	CS       // the CSNET class (Obsolete - used only for examples in some obsolete RFCs)
-	CH       // the CHAOS class
-	HS       // Hesiod [Dyer 87]
+	_  QClass = iota
+	IN        // the Internet
+	CS        // the CSNET class (Obsolete - used only for examples in some obsolete RFCs)
+	CH        // the CHAOS class
+	HS        // Hesiod [Dyer 87]
 )
 
 type Question struct {
 	Name  string
-	Type  Type
-	Class Class
+	Type  QType
+	Class QClass
 }
 
 func handleQuestion(data []byte, offset int) (Question, int) {
@@ -81,8 +82,8 @@ func handleQuestion(data []byte, offset int) (Question, int) {
 
 	que := Question{
 		Name:  name,
-		Type:  Type(qtype),
-		Class: Class(qclass),
+		Type:  QType(qtype),
+		Class: QClass(qclass),
 	}
 
 	return que, offset
@@ -100,6 +101,7 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 
 	wg := sync.WaitGroup{}
 	n := len(questions)
+	log.Println("len ques:", n)
 	questionsCh := make(chan Question, n)
 
 	for _, que := range questions {
@@ -119,10 +121,13 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 	}()
 
 	if len(questionsCh) == 0 {
+		questions = nil
 		return nil, 0
 	}
 
+	log.Println("before:", questions)
 	questions = questions[:0]
+	log.Println("after:", questions)
 	for que := range questionsCh {
 		questions = append(questions, que)
 	}
