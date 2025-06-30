@@ -12,17 +12,17 @@ type Item struct {
 	Length uint16
 	IP     net.IP
 	Name   string
-	Exp    time.Duration
+	Exp    time.Time
 }
 
 type Cache struct {
-	cache map[uint16]map[string]*Item
+	cache map[string]*Item
 	mtx   sync.RWMutex
 }
 
 func InitCache() *Cache {
 	chc := &Cache{
-		cache: make(map[uint16]map[string]*Item),
+		cache: make(map[string]*Item),
 		mtx:   sync.RWMutex{},
 	}
 	go chc.cleanRecords()
@@ -35,11 +35,7 @@ func (c *Cache) Set(ip []byte, name string, class, tp, len uint16, ttl uint32) {
 	defer c.mtx.Unlock()
 
 	if c.cache == nil {
-		c.cache = make(map[uint16]map[string]*Item)
-	}
-
-	if c.cache[tp] == nil {
-		c.cache[tp] = make(map[string]*Item)
+		c.cache = make(map[string]*Item)
 	}
 
 	item := &Item{
@@ -48,21 +44,19 @@ func (c *Cache) Set(ip []byte, name string, class, tp, len uint16, ttl uint32) {
 		Class:  class,
 		Type:   tp,
 		Length: len,
-		Exp:    time.Duration(ttl),
+		Exp:    time.Now().Add(time.Duration(ttl) * time.Second),
 	}
 
-	c.cache[tp][name] = item
+	c.cache[name] = item
 }
 
 func (c *Cache) Get(tp uint16, dmn string) (Item, bool) {
 	c.mtx.RLock()
 	defer c.mtx.RUnlock()
 
-	if cache, ok := c.cache[tp]; ok {
-		if itm, ok := cache[dmn]; ok {
-			if int(itm.Exp.Seconds()) > 0 {
-				return *itm, true
-			}
+	if item, ok := c.cache[dmn]; ok {
+		if item.Exp.After(time.Now()) {
+			return *item, true
 		}
 	}
 
@@ -73,11 +67,9 @@ func (c *Cache) cleanRecords() {
 	for c.cache != nil {
 		c.mtx.Lock()
 
-		for _, chc := range c.cache {
-			for dmn, itm := range chc {
-				if int(itm.Exp.Seconds()) <= 0 {
-					delete(chc, dmn)
-				}
+		for _, item := range c.cache {
+			if item.Exp.Second() <= 0 {
+				delete(c.cache, item.Name)
 			}
 		}
 
