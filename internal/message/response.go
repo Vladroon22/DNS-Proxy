@@ -43,18 +43,18 @@ func BuildResponse(header *Header, que Question, che *cache.Cache) []byte {
 	binary.Write(buffer, binary.BigEndian, que.Class)
 	log.Println("DNS response question:", que)
 
-	rd, _ := che.Get(uint16(que.Type), que.Name)
+	record, _ := che.Get(uint16(que.Type), que.Name)
 	buffer.Write([]byte{0xC0, 0x0C})
 
 	binary.Write(buffer, binary.BigEndian, que.Type)
 	binary.Write(buffer, binary.BigEndian, que.Class)
 
 	ttl := make([]byte, 4)
-	binary.BigEndian.PutUint32(ttl, uint32(rd.Exp))
+	binary.BigEndian.PutUint32(ttl, uint32(record.Exp.Second()))
 	binary.Write(buffer, binary.BigEndian, ttl)
 
-	binary.Write(buffer, binary.BigEndian, rd.Length)
-	buffer.Write(rd.IP)
+	binary.Write(buffer, binary.BigEndian, record.Length)
+	buffer.Write(record.IP)
 
 	return buffer.Bytes()
 }

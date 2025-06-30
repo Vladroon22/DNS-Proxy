@@ -103,16 +103,12 @@ func parseGoogleResponse(data []byte, che *cache.Cache) error {
 
 		var ip []byte
 		switch Type {
-		case uint16(message.A):
-			parsed := data[offset : offset+int(length)]
-			ip = net.IPv4(parsed[0], parsed[1], parsed[2], parsed[3]) // ???
-		case uint16(message.AAAA):
-			parsedIP := data[offset : offset+int(length)] // ???
-			ip = net.ParseIP(string(parsedIP))
+		case uint16(message.A), uint16(message.AAAA):
+			ip = data[offset : offset+int(length)]
 		default:
 			return fmt.Errorf("unsupported type of record")
 		}
-		log.Println("ip:", string(ip))
+		log.Println("ip:", ip)
 		che.Set(ip, name, Class, Type, length, ttl)
 		offset += int(length)
 	}
@@ -132,7 +128,7 @@ func readName(data []byte, offset int, origData []byte) (string, int, error) {
 
 		if length&0xC0 == 0xC0 {
 			if offset+1 >= len(data) {
-				return "", offset, fmt.Errorf("wrong compression pointer")
+				return "", offset, fmt.Errorf("invalid compression pointer")
 			}
 			ptr := int(binary.BigEndian.Uint16(data[offset:offset+2]) & 0x3FFF)
 			if visit[ptr] {
@@ -147,7 +143,7 @@ func readName(data []byte, offset int, origData []byte) (string, int, error) {
 			return strings.Join(names, "."), offset + 2, nil
 		}
 		if offset+1+length > len(data) {
-			return "", offset, fmt.Errorf("wrong length of offset")
+			return "", offset, fmt.Errorf("invalid label length")
 		}
 		names = append(names, string(data[offset+1:offset+1+length]))
 		offset += 1 + length

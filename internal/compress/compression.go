@@ -28,20 +28,12 @@ func (cmp *Compress) AddName(name string, offset int) {
 	cmp.mu.Lock()
 	defer cmp.mu.Unlock()
 
-	if !strings.HasSuffix(name, ".") {
-		name += "."
-	}
-
 	if _, ok := cmp.names[name]; !ok {
 		cmp.names[name] = Info{offset: offset, pointer: 0}
 	}
 }
 
 func (cmp *Compress) EncodeName(name string, currOffset int) []byte {
-	if !strings.HasSuffix(name, ".") {
-		name += "."
-	}
-
 	if info, ok := cmp.names[name]; ok && info.offset < currOffset {
 		info.pointer++
 

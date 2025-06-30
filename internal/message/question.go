@@ -2,6 +2,7 @@ package message
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -48,55 +49,150 @@ type Question struct {
 	Class QClass
 }
 
-func handleQuestion(data []byte, offset int) (Question, int) {
-	domain := []string{}
-	visit := make(map[int]bool)
+func handleQuestion(data []byte, offset int) (Question, int, error) {
+	/*	domain := []string{}
+		visit := make(map[int]bool)
 
+		for {
+			length := int(data[offset])
+			if length == 0 {
+				offset++
+				break
+			}
+
+			if length&0xC0 == 0xC0 {
+				if offset+1 >= len(data) {
+					return Question{}, 0, fmt.Errorf("invalid compression pointer")
+				}
+				ptr := int(binary.BigEndian.Uint16(data[offset:offset+2]) & 0x3FFF)
+				if visit[ptr] {
+					return Question{}, 0, fmt.Errorf("compression is cycled")
+				}
+				visit[offset] = true
+				offset += 2
+
+				part, _, err := readName(data[ptr:], 0, data)
+				if err != nil {
+					return Question{}, 0, err
+				}
+				domain = append(domain, part)
+				break
+			}
+
+			if offset+1+length > len(data) {
+				return Question{}, 0, fmt.Errorf("invalid label length")
+			}
+
+			domain = append(domain, string(data[offset+1:offset+1+length]))
+			offset = 1 + length
+		}
+		name := strings.Join(domain, ".")
+		log.Println(name)
+	*/
+
+	//qtype := binary.BigEndian.Uint16(data[offset : offset+2])
+	//qclass := binary.BigEndian.Uint16(data[offset+2 : offset+4])
+
+	//que := Question{
+	//	Name:  name,
+	//	Type:  QType(qtype),
+	//	Class: QClass(qclass),
+	//}
+	//return que, offset + 4, nil
+	return Question{}, 0, nil
+}
+
+/*
+func readName(data []byte, offset int, visit map[int]bool) (string, int, error) {
+	var parts []string
 	for {
+		if offset >= len(data) {
+			return "", 0, fmt.Errorf("invalid offset")
+		}
+
 		length := int(data[offset])
 		if length == 0 {
-			break
+			return "", offset + 1, nil
 		}
 
 		if length&0xC0 == 0xC0 {
-			if visit[offset] {
-				break
+			if offset+1 >= len(data) {
+				return "", 0, fmt.Errorf("invalid compression pointer")
 			}
-
+			ptr := int(binary.BigEndian.Uint16(data[offset:offset+2]) & 0x3FFF)
+			if visit[ptr] {
+				return "", 0, fmt.Errorf("compression is cycled")
+			}
 			visit[offset] = true
-			if len(domain) > 0 {
-				break
+
+			subparts, _, err := readName(data[ptr:], 0, visit)
+			if err != nil {
+				return "", 0, err
 			}
-			break
+			parts = append(parts, subparts)
+			return strings.Join(parts, "."), offset + 2, nil
 		}
 
-		offset++
-		domain = append(domain, string(data[offset:offset+length]))
-		offset += length
+		if offset+1+length > len(data) {
+			return "", 0, fmt.Errorf("invalid label length")
+		}
+		parts = append(parts, string(data[offset+1:offset+1+length]))
+		offset += 1 + length
 	}
-	name := strings.Join(domain, ".")
-	offset++
+}
+*/
 
-	qtype := binary.BigEndian.Uint16(data[offset : offset+2])
-	qclass := binary.BigEndian.Uint16(data[offset+2 : offset+4])
+func readName(data []byte, offset int, origData []byte) (string, int, error) {
+	names := []string{}
+	visit := make(map[int]bool)
 
-	que := Question{
-		Name:  name,
-		Type:  QType(qtype),
-		Class: QClass(qclass),
+	for offset < len(data) {
+		length := int(data[offset])
+		if length == 0 {
+			return strings.Join(names, "."), offset + 1, nil
+		}
+
+		if length&0xC0 == 0xC0 {
+			if offset+1 >= len(data) {
+				return "", offset, fmt.Errorf("invalid compression pointer")
+			}
+			ptr := int(binary.BigEndian.Uint16(data[offset:offset+2]) & 0x3FFF)
+			if visit[ptr] {
+				return "", offset, fmt.Errorf("compression is cycled")
+			}
+			visit[ptr] = true
+			name, _, err := readName(data[ptr:], 0, origData)
+			if err != nil {
+				return "", offset, err
+			}
+			names = append(names, name)
+			return strings.Join(names, "."), offset + 2, nil
+		}
+		if offset+1+length > len(data) {
+			return "", offset, fmt.Errorf("invalid label length")
+		}
+		names = append(names, string(data[offset+1:offset+1+length]))
+		offset += 1 + length
 	}
-
-	return que, offset
+	return "", offset, fmt.Errorf("unexpected EOF")
 }
 
-func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question, int) {
+func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question, int, error) {
 	questions := make([]Question, 0, qdcount)
 	offset := 12
 
 	for range qdcount {
-		que, newOffset := handleQuestion(data, offset)
-		questions = append(questions, que)
-		offset = newOffset + 4
+		var name string
+		var err error
+		name, offset, err = readName(data, offset, data)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		qtype := binary.BigEndian.Uint16(data[offset : offset+2])
+		qclass := binary.BigEndian.Uint16(data[offset+2 : offset+4])
+		questions = append(questions, Question{Name: name, Type: QType(qtype), Class: QClass(qclass)})
+		offset += 4
 	}
 
 	wg := sync.WaitGroup{}
@@ -105,13 +201,13 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 	questionsCh := make(chan Question, n)
 
 	for _, que := range questions {
+		log.Println(que)
 		wg.Add(1)
 		go func(que Question) {
-			defer wg.Done()
-			if _, ok := che.Get(uint16(que.Type), que.Name); !ok {
-				return
+			if _, ok := che.Get(uint16(que.Type), que.Name); ok {
+				questionsCh <- que
 			}
-			questionsCh <- que
+			wg.Done()
 		}(que)
 	}
 
@@ -122,7 +218,7 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 
 	if len(questionsCh) == 0 {
 		questions = nil
-		return nil, 0
+		return nil, 0, nil
 	}
 
 	log.Println("before:", questions)
@@ -132,5 +228,5 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 		questions = append(questions, que)
 	}
 
-	return questions, len(questions)
+	return questions, len(questions), nil
 }
