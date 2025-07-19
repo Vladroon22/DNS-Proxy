@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -55,7 +56,7 @@ func (c *Cache) Get(tp uint16, dmn string) (Item, bool) {
 	defer c.mtx.RUnlock()
 
 	if item, ok := c.cache[dmn]; ok {
-		if item.Exp.After(time.Now()) {
+		if item.Type == tp && item.Exp.After(time.Now()) {
 			return *item, true
 		}
 	}
@@ -64,16 +65,29 @@ func (c *Cache) Get(tp uint16, dmn string) (Item, bool) {
 }
 
 func (c *Cache) cleanRecords() {
-	for c.cache != nil {
+	if c == nil {
+		log.Println("cache is nil")
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
 		c.mtx.Lock()
 
+		if c.cache == nil {
+			c.mtx.Unlock()
+			return
+		}
+
+		now := time.Now()
 		for _, item := range c.cache {
-			if item.Exp.Second() <= 0 {
+			if item.Exp.Before(now) {
 				delete(c.cache, item.Name)
 			}
 		}
 
 		c.mtx.Unlock()
-		time.Sleep(time.Second * 10)
 	}
 }

@@ -10,19 +10,6 @@ import (
 	"github.com/Vladroon22/DNS-Server/internal/compress"
 )
 
-/*
-var cach = map[string]Answer{
-	"youtube.com.": {
-		Name:   "youtube.com.",
-		Type:   A,
-		Class:  IN,
-		TTL:    300,
-		Length: net.IPv4len,
-		IP:     []byte{123, 123, 123, 123},
-	},
-}
-*/
-
 func BuildResponse(header *Header, que Question, che *cache.Cache) []byte {
 	buffer := bytes.NewBuffer(nil)
 	cmp := compress.NewCompress()

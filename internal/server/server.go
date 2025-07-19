@@ -15,19 +15,21 @@ import (
 
 type Server struct {
 	//	tcpconn *net.TCPListener
-	buf_size int
-	edns     bool
-	udpconn  *net.UDPConn
-	udpaddr  *net.UDPAddr
-	limit    *rate_limiter.Limiter
+	cache         *cache.Cache
+	buf_size      int
+	isEnabledEDNS bool
+	udpconn       *net.UDPConn
+	udpaddr       *net.UDPAddr
+	limit         *rate_limiter.Limiter
 	// tcpaddr *net.TCPAddr
 }
 
 func DNSServer(udp *net.UDPAddr, rate int) *Server {
 	return &Server{
-		udpaddr: udp,
-		limit:   rate_limiter.NewLimiter(rate),
-		edns:    false,
+		cache:         cache.InitCache(),
+		udpaddr:       udp,
+		limit:         rate_limiter.NewLimiter(rate),
+		isEnabledEDNS: false,
 	}
 }
 
@@ -52,13 +54,13 @@ func (s *Server) acceptUDP() error {
 		return nil
 	}
 
-	caching := cache.InitCache()
-
-	if s.edns {
+	if s.isEnabledEDNS {
 		s.buf_size = 4096
 	} else {
 		s.buf_size = 512
 	}
+
+	GoogleDNS := to_google.NewDNSReceiver(s.cache, s.buf_size, s.isEnabledEDNS)
 
 	for {
 		buffer := make([]byte, s.buf_size)
@@ -68,8 +70,7 @@ func (s *Server) acceptUDP() error {
 			continue
 		}
 
-		isBanned, reason := s.limit.ProcessIP(string(remote.IP))
-		if isBanned {
+		if isBanned, reason := s.limit.ProcessIP(string(remote.IP)); isBanned {
 			sendToClient([]byte(reason), remote)
 			continue
 		}
@@ -83,7 +84,7 @@ func (s *Server) acceptUDP() error {
 		log.Println("Request header:", header)
 		log.Println("questions:", header.Qdcount)
 
-		questions, n, err := message.HandleQuestions(buffer[:b], header.Qdcount, caching)
+		questions, n, err := message.HandleQuestions(buffer[:b], header.Qdcount, s.cache)
 		if err != nil {
 			sendToClient([]byte(err.Error()), remote)
 			continue
@@ -91,7 +92,7 @@ func (s *Server) acceptUDP() error {
 
 		log.Println("cache ques:", n)
 		if n == 0 {
-			GoogleAnswer, err := to_google.RequestToGoogleDNS(buffer, caching, s.edns)
+			GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(buffer)
 			if err != nil {
 				sendToClient([]byte(err.Error()), remote)
 				continue
@@ -112,7 +113,7 @@ func (s *Server) acceptUDP() error {
 				wg.Add(1)
 				go func(que message.Question) {
 					defer wg.Done()
-					respChan <- message.BuildResponse(&header, que, caching)
+					respChan <- message.BuildResponse(&header, que, s.cache)
 				}(que)
 			}
 
@@ -126,12 +127,12 @@ func (s *Server) acceptUDP() error {
 			}
 		} else if n == 1 {
 			log.Println("Cache question:", questions)
-			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
 			header.Ancount = 1
 			header.Qdcount = 1
 			header.Arcount = 0
 			header.Nscount = 0
-			response.Write(message.BuildResponse(&header, questions[0], caching))
+			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
+			response.Write(message.BuildResponse(&header, questions[0], s.cache))
 		}
 
 		if err := sendToClient(response.Bytes(), remote); err != nil {
@@ -143,52 +144,3 @@ func (s *Server) acceptUDP() error {
 func (s *Server) CloseUDP() error {
 	return s.udpconn.Close()
 }
-
-/*
-	func (s *Server) StartTCP() error {
-			tcp, err := net.ListenTCP("tcp", s.tcpaddr)
-			if err != nil {
-				return errors.New("failed to listen tcp address: " + err.Error())
-			}
-			s.tcpconn = tcp
-
-			go s.acceptTCP()
-			return nil
-	}
-
-	func (s *Server) acceptTCP() {
-			sendToClient := func(conn *net.TCPConn, resp []byte) error {
-				if _, err := conn.Write(resp); err != nil {
-					log.Println(err)
-					return err
-				}
-				return nil
-			}
-
-			for {
-				buffer := make([]byte, 512)
-				conn, err := s.tcpconn.AcceptTCP()
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-
-				header, err := message.HandleHeader(buffer[:12])
-				if err != nil {
-					sendToClient(conn, []byte(err.Error()))
-					log.Println(err)
-					continue
-				}
-				header.Decode()
-
-				var response bytes.Buffer
-				if err := sendToClient(conn, response.Bytes()); err != nil {
-					continue
-				}
-			}
-		}
-
-		func (s *Server) CloseTCP() error {
-			return s.tcpconn.Close()
-		}
-*/

@@ -19,21 +19,34 @@ const (
 	DNSv4 = "8.8.8.8:853"
 )
 
-func RequestToGoogleDNS(request []byte, che *cache.Cache, eDNS bool) ([]byte, error) {
-	var size int
-	var netType string
-	if eDNS {
-		size = 4096
-		netType = "tcp"
+type DNSReceiver struct {
+	msg_size int
+	network  string
+	eDNS     bool
+	che      *cache.Cache
+}
+
+func NewDNSReceiver(che *cache.Cache, size int, eDNS bool) *DNSReceiver {
+	return &DNSReceiver{
+		eDNS:     eDNS,
+		msg_size: size,
+		che:      che,
+	}
+}
+
+func (rcv *DNSReceiver) RequestToGoogleDNS(request []byte) ([]byte, error) {
+	if rcv.eDNS {
+		rcv.msg_size = 4096
+		rcv.network = "tcp"
 	} else {
-		size = 512
-		netType = "udp"
+		rcv.msg_size = 512
+		rcv.network = "udp"
 	}
 
 	var conn net.Conn
 	for _, dns := range []string{DNSv1, DNSv2, DNSv3, DNSv4} {
 		var err error
-		conn, err = net.DialTimeout(netType, dns, 5*time.Second)
+		conn, err = net.DialTimeout(rcv.network, dns, 5*time.Second)
 		if err == nil {
 			break
 		}
@@ -47,14 +60,14 @@ func RequestToGoogleDNS(request []byte, che *cache.Cache, eDNS bool) ([]byte, er
 		return nil, fmt.Errorf("error of sending request to google: %s", err)
 	}
 
-	data := make([]byte, size)
+	data := make([]byte, rcv.msg_size)
 	n, err := conn.Read(data)
 	if err != nil {
 		log.Println("Error reading answer from google:", err)
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
 
-	if err := parseGoogleResponse(data[:n], che); err != nil {
+	if err := rcv.parseGoogleResponse(data[:n]); err != nil {
 		log.Println("Error parse answer from google:", err)
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
@@ -62,10 +75,14 @@ func RequestToGoogleDNS(request []byte, che *cache.Cache, eDNS bool) ([]byte, er
 	return data[:n], nil
 }
 
-func parseGoogleResponse(data []byte, che *cache.Cache) error {
+func (rcv *DNSReceiver) parseGoogleResponse(data []byte) error {
 	header, err := message.HandleHeader(data[:12])
 	if err != nil {
 		return err
+	}
+
+	if rcv.che == nil {
+		return fmt.Errorf("nil che")
 	}
 
 	offset := 12
@@ -109,7 +126,7 @@ func parseGoogleResponse(data []byte, che *cache.Cache) error {
 			return fmt.Errorf("unsupported type of record")
 		}
 		log.Println("ip:", ip)
-		che.Set(ip, name, Class, Type, length, ttl)
+		rcv.che.Set(ip, name, Class, Type, length, ttl)
 		offset += int(length)
 	}
 

@@ -1,19 +1,21 @@
 package rate_limiter
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
 )
 
 const (
+	banTime      = time.Minute * 5
 	ErrBanIP     = "access denied"
-	ErrExceedRPS = "exceed requests per second"
+	ErrExceedRPS = "exceed req/sec"
 )
 
 type Limiter struct {
 	incomingIps map[string]*rpsCounter
-	bannedIPs   map[string]time.Duration
+	bannedIPs   map[string]time.Time
 	mtx         sync.Mutex
 	limit       int
 }
@@ -21,13 +23,14 @@ type Limiter struct {
 func NewLimiter(rps int) *Limiter {
 	return &Limiter{
 		incomingIps: make(map[string]*rpsCounter),
-		bannedIPs:   make(map[string]time.Duration),
+		bannedIPs:   make(map[string]time.Time),
 		mtx:         sync.Mutex{},
 		limit:       rps,
 	}
 }
 
 func (l *Limiter) StartLimiter() {
+	l.cleanIncomingIPs()
 	if len(l.bannedIPs) > 0 {
 		l.cleanBannedIPs()
 	}
@@ -38,53 +41,64 @@ func (l *Limiter) setIP(ip string) {
 	defer l.mtx.Unlock()
 
 	if l.bannedIPs == nil {
-		l.bannedIPs = make(map[string]time.Duration)
+		l.bannedIPs = make(map[string]time.Time)
 	}
-	l.bannedIPs[ip] = time.Minute * 5
+	l.bannedIPs[ip] = time.Now().Add(banTime)
 }
 
 func (l *Limiter) ProcessIP(ip string) (bool, string) {
 	l.mtx.Lock()
-	tm, ban := l.bannedIPs[ip]
-	l.mtx.Unlock()
-	if ban && int(tm.Seconds()) > 0 {
-		return true, ErrBanIP + " for " + tm.String()
-	}
-
-	l.mtx.Lock()
 	defer l.mtx.Unlock()
-	defer delete(l.incomingIps, ip)
+
+	if tm, banned := l.bannedIPs[ip]; banned && time.Since(tm) > 0 {
+		return true, fmt.Sprintf("%s for %s", ErrBanIP, tm.String())
+	}
 
 	RPS := 0
-	rpscounter, ok := l.incomingIps[ip]
-	if !ok {
+	if _, ok := l.incomingIps[ip]; !ok {
 		l.incomingIps[ip] = NewRPSCounter()
-		l.incomingIps[ip].increment()
-		RPS = int(l.incomingIps[ip].getRPS())
-	} else {
-		rpscounter.increment()
-		RPS = int(rpscounter.getRPS())
 	}
+	l.incomingIps[ip].increment()
+	RPS = int(l.incomingIps[ip].getRPS())
 
 	if RPS > l.limit {
 		l.setIP(ip)
-		return true, ErrExceedRPS + " " + strconv.Itoa(RPS)
+		return true, fmt.Sprintf("%s: %s", ErrExceedRPS, strconv.Itoa(RPS))
 	}
 
 	return false, ""
 }
 
 func (l *Limiter) cleanBannedIPs() {
-	for l.bannedIPs != nil {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
 		l.mtx.Lock()
 
 		for ip, tm := range l.bannedIPs {
-			if int(tm.Seconds()) <= 0 {
+			if time.Since(tm) <= 0.0 {
 				delete(l.bannedIPs, ip)
 			}
 		}
 
 		l.mtx.Unlock()
-		time.Sleep(time.Second * 5)
+	}
+}
+
+func (l *Limiter) cleanIncomingIPs() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		l.mtx.Lock()
+
+		for ip, rps := range l.incomingIps {
+			if rps.lastRequest.Before(time.Now().Add(-time.Second)) {
+				delete(l.incomingIps, ip)
+			}
+		}
+
+		l.mtx.Unlock()
 	}
 }

@@ -203,12 +203,12 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 	for _, que := range questions {
 		log.Println(que)
 		wg.Add(1)
-		go func(que Question) {
+		go func(que *Question) {
 			if _, ok := che.Get(uint16(que.Type), que.Name); ok {
-				questionsCh <- que
+				questionsCh <- *que
 			}
 			wg.Done()
-		}(que)
+		}(&que)
 	}
 
 	go func() {
@@ -216,14 +216,7 @@ func HandleQuestions(data []byte, qdcount uint16, che *cache.Cache) ([]Question,
 		close(questionsCh)
 	}()
 
-	if len(questionsCh) == 0 {
-		questions = nil
-		return nil, 0, nil
-	}
-
-	log.Println("before:", questions)
 	questions = questions[:0]
-	log.Println("after:", questions)
 	for que := range questionsCh {
 		questions = append(questions, que)
 	}

@@ -18,13 +18,13 @@ var (
 
 const (
 	QRBit     = 15 //  (Query/Response)
-	OPcodeBit = 11 // 	Opcode (4 bits)
+	OPcodeBit = 11 //  (Opcode, 4 bits)
 	AABit     = 10 //  (Authoritative Answer)
 	TCBit     = 9  //  (Truncated)
 	RDBit     = 8  //  (Recursion Desired)
 	RABit     = 7  //  (Recursion Available)
-	ZBit      = 4  // 	(Reserved, 3 bits)
-	RcodeBit  = 0  // 	(Response Code, 4 bits)
+	ZBit      = 4  //  (Reserved, 3 bits)
+	RcodeBit  = 0  //  (Response Code, 4 bits)
 )
 
 type Header struct {
