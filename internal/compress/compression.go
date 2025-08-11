@@ -34,12 +34,13 @@ func (cmp *Compress) AddName(name string, offset int) {
 }
 
 func (cmp *Compress) EncodeName(name string, currOffset int) []byte {
+	cmp.mu.Lock()
+	defer cmp.mu.Unlock()
+
 	if info, ok := cmp.names[name]; ok && info.offset < currOffset {
 		info.pointer++
 
-		cmp.mu.Lock()
 		cmp.names[name] = info
-		cmp.mu.Unlock()
 
 		buf := make([]byte, 2)
 		binary.BigEndian.PutUint16(buf, uint16(0xC000|info.offset))

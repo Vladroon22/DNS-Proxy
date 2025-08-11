@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log"
 	"net"
@@ -92,7 +93,7 @@ func (s *Server) acceptUDP() error {
 
 		log.Println("cache ques:", n)
 		if n == 0 {
-			GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(buffer)
+			GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(context.Background(), buffer)
 			if err != nil {
 				sendToClient([]byte(err.Error()), remote)
 				continue

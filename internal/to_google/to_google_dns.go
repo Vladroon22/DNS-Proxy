@@ -1,6 +1,7 @@
 package to_google
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -34,7 +35,7 @@ func NewDNSReceiver(che *cache.Cache, size int, eDNS bool) *DNSReceiver {
 	}
 }
 
-func (rcv *DNSReceiver) RequestToGoogleDNS(request []byte) ([]byte, error) {
+func (rcv *DNSReceiver) RequestToGoogleDNS(ctx context.Context, request []byte) ([]byte, error) {
 	if rcv.eDNS {
 		rcv.msg_size = 4096
 		rcv.network = "tcp"
@@ -67,7 +68,7 @@ func (rcv *DNSReceiver) RequestToGoogleDNS(request []byte) ([]byte, error) {
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
 
-	if err := rcv.parseGoogleResponse(data[:n]); err != nil {
+	if err := rcv.parseGoogleResponse(ctx, data[:n]); err != nil {
 		log.Println("Error parse answer from google:", err)
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
@@ -75,7 +76,10 @@ func (rcv *DNSReceiver) RequestToGoogleDNS(request []byte) ([]byte, error) {
 	return data[:n], nil
 }
 
-func (rcv *DNSReceiver) parseGoogleResponse(data []byte) error {
+func (rcv *DNSReceiver) parseGoogleResponse(c context.Context, data []byte) error {
+	_, cancel := context.WithCancel(c)
+	defer cancel()
+
 	header, err := message.HandleHeader(data[:12])
 	if err != nil {
 		return err
