@@ -58,6 +58,7 @@ func (l *Limiter) ProcessIP(ip string) (bool, string) {
 	counter, ok := l.incomingIps[ip]
 	if !ok {
 		counter = NewRPSCounter()
+		l.incomingIps[ip] = counter
 	}
 	counter.increment()
 
