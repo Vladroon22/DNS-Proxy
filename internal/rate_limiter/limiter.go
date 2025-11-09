@@ -1,8 +1,8 @@
 package rate_limiter
 
 import (
+	"context"
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -30,16 +30,16 @@ func NewLimiter(rps int) *Limiter {
 }
 
 func (l *Limiter) StartLimiter() {
-	l.cleanIncomingIPs()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	l.cleanIncomingIPs(ctx)
 	if len(l.bannedIPs) > 0 {
-		l.cleanBannedIPs()
+		l.cleanBannedIPs(ctx)
 	}
 }
 
 func (l *Limiter) setIP(ip string) {
-	l.mtx.Lock()
-	defer l.mtx.Unlock()
-
 	if l.bannedIPs == nil {
 		l.bannedIPs = make(map[string]time.Time)
 	}
@@ -54,51 +54,57 @@ func (l *Limiter) ProcessIP(ip string) (bool, string) {
 		return true, fmt.Sprintf("%s for %s", ErrBanIP, tm.String())
 	}
 
-	RPS := 0
-	if _, ok := l.incomingIps[ip]; !ok {
-		l.incomingIps[ip] = NewRPSCounter()
+	var counter *rpsCounter
+	counter, ok := l.incomingIps[ip]
+	if !ok {
+		counter = NewRPSCounter()
 	}
-	l.incomingIps[ip].increment()
-	RPS = int(l.incomingIps[ip].getRPS())
+	counter.increment()
 
-	if RPS > l.limit {
+	rps := int(counter.getRPS())
+	if rps > l.limit {
 		l.setIP(ip)
-		return true, fmt.Sprintf("%s: %s", ErrExceedRPS, strconv.Itoa(RPS))
+		return true, fmt.Sprintf("%s: %d", ErrExceedRPS, rps)
 	}
 
 	return false, ""
 }
 
-func (l *Limiter) cleanBannedIPs() {
+func (l *Limiter) cleanBannedIPs(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		l.mtx.Lock()
-
-		for ip, tm := range l.bannedIPs {
-			if time.Since(tm) <= 0.0 {
-				delete(l.bannedIPs, ip)
+	for {
+		select {
+		case <-ticker.C:
+			l.mtx.Lock()
+			for ip, tm := range l.bannedIPs {
+				if time.Since(tm) <= 0.0 {
+					delete(l.bannedIPs, ip)
+				}
 			}
+			l.mtx.Unlock()
+		case <-ctx.Done():
+			return
 		}
-
-		l.mtx.Unlock()
 	}
+
 }
 
-func (l *Limiter) cleanIncomingIPs() {
-	ticker := time.NewTicker(time.Second)
+func (l *Limiter) cleanIncomingIPs(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	select {
+	case <-ticker.C:
 		l.mtx.Lock()
-
+		defer l.mtx.Unlock()
 		for ip, rps := range l.incomingIps {
 			if rps.lastRequest.Before(time.Now().Add(-time.Second)) {
 				delete(l.incomingIps, ip)
 			}
 		}
-
-		l.mtx.Unlock()
+	case <-ctx.Done():
+		return
 	}
 }
