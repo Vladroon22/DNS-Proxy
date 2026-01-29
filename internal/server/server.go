@@ -3,145 +3,226 @@ package server
 import (
 	"bytes"
 	"context"
-	"errors"
-	"log"
+	"encoding/binary"
+	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/Vladroon22/DNS-Server/internal/cache"
+	"github.com/Vladroon22/DNS-Server/internal/logger"
 	"github.com/Vladroon22/DNS-Server/internal/message"
 	"github.com/Vladroon22/DNS-Server/internal/rate_limiter"
 	"github.com/Vladroon22/DNS-Server/internal/to_google"
 )
 
 type Server struct {
-	//	tcpconn *net.TCPListener
 	cache         *cache.Cache
-	buf_size      int
+	bufSize       int
 	isEnabledEDNS bool
-	udpconn       *net.UDPConn
-	udpaddr       *net.UDPAddr
+	udpConn       *net.UDPConn
+	udpAddr       *net.UDPAddr
 	limit         *rate_limiter.Limiter
+	logger        *logger.Logger
 	// tcpaddr *net.TCPAddr
+	//	tcpconn *net.TCPListener
 }
 
-func DNSServer(udp *net.UDPAddr, rate int) *Server {
+func DNSServer(udp *net.UDPAddr, rate int, lg *logger.Logger) *Server {
 	return &Server{
 		cache:         cache.InitCache(),
-		udpaddr:       udp,
+		udpAddr:       udp,
 		limit:         rate_limiter.NewLimiter(rate),
 		isEnabledEDNS: false,
+		logger:        lg,
 	}
 }
 
 func (s *Server) StartUDP() error {
-	udp, err := net.ListenUDP("udp", s.udpaddr)
+	udp, err := net.ListenUDP("udp", s.udpAddr)
 	if err != nil {
-		return errors.New("failed to listen udp address: " + err.Error())
+		return err
 	}
-	s.udpconn = udp
+	s.udpConn = udp
+
+	if s.isEnabledEDNS {
+		s.bufSize = 4096
+	} else {
+		s.bufSize = 512
+	}
 
 	go s.limit.StartLimiter()
 	go s.acceptUDP()
+
 	return nil
 }
 
-func (s *Server) acceptUDP() error {
-	sendToClient := func(resp []byte, remote *net.UDPAddr) error {
-		if _, err := s.udpconn.WriteToUDP(resp, remote); err != nil {
-			log.Println(err)
-			return err
-		}
-		return nil
+func (s *Server) sendToClient(resp []byte, remote *net.UDPAddr) error {
+	if _, err := s.udpConn.WriteToUDP(resp, remote); err != nil {
+		s.logger.Log(logger.LogEntry{Info: err.Error()})
+		return err
 	}
+	return nil
+}
 
-	if s.isEnabledEDNS {
-		s.buf_size = 4096
-	} else {
-		s.buf_size = 512
+func (s *Server) acceptUDP() {
+	GoogleDNS := to_google.NewDNSReceiver(s.cache, s.bufSize, s.isEnabledEDNS, s.logger)
+
+	bufPool := &sync.Pool{
+		New: func() interface{} {
+			return make([]byte, s.bufSize)
+		},
 	}
-
-	GoogleDNS := to_google.NewDNSReceiver(s.cache, s.buf_size, s.isEnabledEDNS)
 
 	for {
-		buffer := make([]byte, s.buf_size)
-		b, remote, err := s.udpconn.ReadFromUDP(buffer)
+		buf := bufPool.Get().([]byte)
+		b, remote, err := s.udpConn.ReadFromUDP(buf)
 		if err != nil {
-			log.Println(err)
-			continue
+			s.logger.Log(logger.LogEntry{Info: err.Error()})
+			return
 		}
 
-		if isBanned, reason := s.limit.ProcessIP(string(remote.IP)); isBanned {
-			sendToClient([]byte(reason), remote)
-			continue
-		}
-
-		var response bytes.Buffer
-		header, err := message.HandleHeader(buffer[:12])
-		if err != nil {
-			sendToClient([]byte(err.Error()), remote)
-			continue
-		}
-		log.Println("Request header:", header)
-		log.Println("questions:", header.Qdcount)
-
-		questions, n, err := message.HandleQuestions(buffer[:b], header.Qdcount, s.cache)
-		if err != nil {
-			sendToClient([]byte(err.Error()), remote)
-			continue
-		}
-
-		log.Println("cache ques:", n)
-		if n == 0 {
-			GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(context.Background(), buffer)
-			if err != nil {
-				sendToClient([]byte(err.Error()), remote)
-				continue
-			}
-			log.Println("Google:", GoogleAnswer)
-			response.Write(GoogleAnswer)
-		} else if n > 1 {
-			for _, que := range questions {
-				log.Println("Cache question:", que)
-			}
-
-			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
-			header.Qdcount = uint16(n)
-
-			wg := sync.WaitGroup{}
-			respChan := make(chan []byte, n)
-			for _, que := range questions {
-				wg.Add(1)
-				go func(que message.Question) {
-					defer wg.Done()
-					respChan <- message.BuildResponse(&header, que, s.cache)
-				}(que)
-			}
-
-			go func() {
-				wg.Wait()
-				close(respChan)
+		go func(c context.Context, buffer []byte, n int, remote *net.UDPAddr) {
+			_, cancel := context.WithTimeout(c, time.Second*40)
+			defer func() {
+				bufPool.Put(buffer)
+				cancel()
 			}()
 
-			for resp := range respChan {
-				response.Write(resp)
+			if isBanned, reason := s.limit.ProcessIP(string(remote.IP)); isBanned {
+				if err := s.sendToClient([]byte(reason), remote); err != nil {
+					s.logger.Log(logger.LogEntry{Info: err.Error()})
+					return
+				}
+				s.logger.Log(logger.LogEntry{Info: err.Error()})
+				return
 			}
-		} else if n == 1 {
-			log.Println("Cache question:", questions)
-			header.Ancount = 1
-			header.Qdcount = 1
-			header.Arcount = 0
-			header.Nscount = 0
-			header.SetFlags(&header.Flags, 1, 0, 0, 0, 0, 0, 0, 0)
-			response.Write(message.BuildResponse(&header, questions[0], s.cache))
-		}
 
-		if err := sendToClient(response.Bytes(), remote); err != nil {
-			continue
-		}
+			var response bytes.Buffer
+			header, err := message.HandleHeader(buffer[:12])
+			if err != nil {
+				if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					return
+				}
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+				return
+			}
+
+			s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Request header: %v", header)})
+			s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("questions: %d", header.Qdcount)})
+
+			questions, n, err := message.HandleQuestions(buffer[:b], header.Qdcount, s.cache)
+			if err != nil {
+				if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+					return
+				}
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+				return
+			}
+
+			builder := message.NewResponseBuilder()
+
+			switch n {
+			case 0:
+				GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(c, buffer)
+				if err != nil {
+					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					}
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					return
+				}
+
+				if len(GoogleAnswer) >= 4 {
+					flags := binary.BigEndian.Uint16(GoogleAnswer[2:4])
+					flags |= (1 << 7)
+					binary.BigEndian.PutUint16(GoogleAnswer[2:4], flags)
+				}
+
+				if _, err := response.Write(GoogleAnswer); err != nil {
+					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					}
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					return
+				}
+
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Google: %v", GoogleAnswer)})
+			case 1:
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Cache questions: %v", questions[0])})
+
+				header.Ancount = 1
+				header.Qdcount = 1
+				header.Arcount = 0
+				header.Nscount = 0
+
+				header.SetFlags(1, 0, 0, 0, 0, 1, 0, 0)
+				resp := builder.BuildResponse(header, questions[0], s.cache)
+				if resp.Err != nil {
+					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					}
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: response builder error: %s", err)})
+					return
+				}
+
+				if _, err := response.Write(resp.Data); err != nil {
+					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					}
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					return
+				}
+
+			default:
+				for _, que := range questions {
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Cache question: %v", que)})
+				}
+
+				header.SetFlags(1, 0, 0, 0, 1, 1, 0, 0)
+				header.Qdcount = uint16(n)
+
+				wg := &sync.WaitGroup{}
+				respChan := make(chan message.Response, n)
+				for _, que := range questions {
+					wg.Add(1)
+					go func(que message.Question) {
+						defer wg.Done()
+						respChan <- builder.BuildResponse(header, que, s.cache)
+					}(que)
+				}
+
+				go func() {
+					close(respChan)
+					wg.Wait()
+				}()
+
+				for resp := range respChan {
+					if resp.Err != nil {
+						if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						}
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Builder response: %v", err)})
+						continue
+					}
+
+					if _, err := response.Write(resp.Data); err != nil {
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("response error: %s", err.Error())})
+					}
+				}
+			}
+
+			if err := s.sendToClient(response.Bytes(), remote); err != nil {
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+				return
+			}
+
+		}(context.Background(), buf, b, remote)
+
 	}
 }
 
 func (s *Server) CloseUDP() error {
-	return s.udpconn.Close()
+	return s.udpConn.Close()
 }

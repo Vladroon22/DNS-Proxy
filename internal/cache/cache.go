@@ -32,8 +32,8 @@ func InitCache() *Cache {
 }
 
 func (c *Cache) Set(ip []byte, name string, class, tp, len uint16, ttl uint32) {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
+	c.mtx.RLock()
+	defer c.mtx.RUnlock()
 
 	if c.cache == nil {
 		c.cache = make(map[string]*Item)
@@ -74,10 +74,10 @@ func (c *Cache) cleanRecords() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		c.mtx.Lock()
+		c.mtx.RLock()
 
 		if c.cache == nil {
-			c.mtx.Unlock()
+			c.mtx.RUnlock()
 			return
 		}
 
@@ -88,6 +88,6 @@ func (c *Cache) cleanRecords() {
 			}
 		}
 
-		c.mtx.Unlock()
+		c.mtx.RUnlock()
 	}
 }

@@ -1,47 +1,58 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
+	"github.com/Vladroon22/DNS-Server/internal/logger"
 	"github.com/Vladroon22/DNS-Server/internal/server"
 	"github.com/joho/godotenv"
 )
 
 func main() {
+	myLogger := logger.NewLogger()
+	go myLogger.StartLogging()
+	defer myLogger.Stop()
+
 	if err := godotenv.Load(); err != nil {
-		log.Fatalln(err)
+		myLogger.Log(logger.LogEntry{Info: err.Error()})
+		os.Exit(1)
 	}
 
-	portUDP, errUDP := strconv.Atoi((os.Getenv("udp_port")))
-	if errUDP != nil {
-		log.Fatalln(errUDP)
+	port, err := strconv.Atoi((os.Getenv("udp_port")))
+	if err != nil {
+		myLogger.Log(logger.LogEntry{Info: err.Error()})
+		os.Exit(1)
 	}
 
-	configUDP := &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: portUDP}
+	stopServerChan := make(chan error, 1)
+	stopOSChan := make(chan os.Signal, 1)
+	signal.Notify(stopOSChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	srv := server.DNSServer(configUDP, 20)
-	log.Printf("DNS is running on udp: %d\n", 8536)
+	configUDP := &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: port}
+
+	srv := server.DNSServer(configUDP, 20, myLogger)
+	myLogger.Log(logger.LogEntry{Info: fmt.Sprintf("Starting server on port %d", port)})
 
 	go func() {
 		if err := srv.StartUDP(); err != nil {
-			log.Println(err)
-			return
+			stopServerChan <- err
 		}
 	}()
 
-	exitCh := make(chan os.Signal, 1)
-	signal.Notify(exitCh, syscall.SIGINT, syscall.SIGTERM)
-	<-exitCh
+	select {
+	case err := <-stopServerChan:
+		myLogger.Log(logger.LogEntry{Info: fmt.Sprintf("DNS error: %v", err)})
+		os.Exit(1)
+	case sig := <-stopOSChan:
+		myLogger.Log(logger.LogEntry{Info: fmt.Sprintf("Received %v signal, shutting down...", sig)})
 
-	go func() {
 		if err := srv.CloseUDP(); err != nil {
-			log.Println(err)
-			return
+			myLogger.Log(logger.LogEntry{Info: fmt.Sprintf("DNS shutdown error: %v", err)})
 		}
-	}()
+	}
 }

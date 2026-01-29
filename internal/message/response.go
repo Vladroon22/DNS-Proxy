@@ -10,38 +10,76 @@ import (
 	"github.com/Vladroon22/DNS-Server/internal/compress"
 )
 
-func BuildResponse(header *Header, que Question, che *cache.Cache) []byte {
-	buffer := bytes.NewBuffer(nil)
-	cmp := compress.NewCompress()
-	mtx := sync.Mutex{}
+type ResponseBuilder struct {
+	buffer *bytes.Buffer
+	cmp    *compress.Compress
+	mtx    sync.RWMutex
+}
 
-	mtx.Lock()
-	defer mtx.Unlock()
+func NewResponseBuilder() *ResponseBuilder {
+	return &ResponseBuilder{
+		cmp:    compress.NewCompress(),
+		buffer: bytes.NewBuffer(nil),
+	}
+}
 
+type Response struct {
+	Data []byte
+	Err  error
+}
+
+func (rb *ResponseBuilder) BuildResponse(header *Header, que Question, che *cache.Cache) Response {
 	header.Ancount++
 
-	decodedHeader := header.Decode()
-	buffer.Write(decodedHeader)
-	cmp.AddName("", 12)
+	decodedHeader, err := header.Decode()
+	if err != nil {
+		return Response{}
+	}
+
+	if _, err := rb.buffer.Write(decodedHeader); err != nil {
+		return Response{}
+	}
+
+	rb.cmp.AddName("", 12)
 	log.Println("DNS response header:", header)
 
-	buffer.Write(cmp.EncodeName(que.Name, buffer.Len()))
-	binary.Write(buffer, binary.BigEndian, que.Type)
-	binary.Write(buffer, binary.BigEndian, que.Class)
+	rb.buffer.Write(rb.cmp.EncodeName(que.Name, rb.buffer.Len()))
+	if err := binary.Write(rb.buffer, binary.BigEndian, que.Type); err != nil {
+		return Response{}
+	}
+
+	if err := binary.Write(rb.buffer, binary.BigEndian, que.Class); err != nil {
+		return Response{}
+	}
+
 	log.Println("DNS response question:", que)
 
 	record, _ := che.Get(uint16(que.Type), que.Name)
-	buffer.Write([]byte{0xC0, 0x0C})
+	rb.buffer.Write([]byte{0xC0, 0x0C})
 
-	binary.Write(buffer, binary.BigEndian, que.Type)
-	binary.Write(buffer, binary.BigEndian, que.Class)
+	if err := binary.Write(rb.buffer, binary.BigEndian, que.Type); err != nil {
+		return Response{}
+	}
+
+	if err := binary.Write(rb.buffer, binary.BigEndian, que.Class); err != nil {
+		return Response{}
+	}
 
 	ttl := make([]byte, 4)
 	binary.BigEndian.PutUint32(ttl, uint32(record.Exp.Second()))
-	binary.Write(buffer, binary.BigEndian, ttl)
+	if err := binary.Write(rb.buffer, binary.BigEndian, ttl); err != nil {
+		return Response{}
+	}
 
-	binary.Write(buffer, binary.BigEndian, record.Length)
-	buffer.Write(record.IP)
+	if err := binary.Write(rb.buffer, binary.BigEndian, record.Length); err != nil {
+		return Response{}
+	}
+	if _, err := rb.buffer.Write(record.IP); err != nil {
+		return Response{}
+	}
 
-	return buffer.Bytes()
+	total := rb.buffer.Bytes()
+	rb.buffer.Reset()
+
+	return Response{Data: total, Err: nil}
 }

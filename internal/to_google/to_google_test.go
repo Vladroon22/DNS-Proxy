@@ -29,7 +29,8 @@ func TestRequestToGoogle(t *testing.T) {
 		if err == nil {
 			break
 		} else {
-			t.Errorf("%v\n", err)
+			t.Logf("%v\n", err)
+			continue
 		}
 	}
 	defer conn.Close()

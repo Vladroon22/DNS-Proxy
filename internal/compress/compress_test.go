@@ -188,3 +188,72 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Errorf("pointer was never incremented, got %d", info.pointer)
 	}
 }
+
+// add
+
+func TestEncodeName_PointerLogic(t *testing.T) {
+	cmp := NewCompress()
+	name := "test.com"
+	offset1 := 50
+	offset2 := 100
+
+	// Первое добавление
+	cmp.AddName(name, offset1)
+
+	// Кодируем с offset2 > offset1 - должен вернуть указатель
+	encoded := cmp.EncodeName(name, offset2)
+
+	if len(encoded) != 2 {
+		t.Errorf("expected pointer (2 bytes), got %d bytes", len(encoded))
+	}
+
+	// Проверяем, что это действительно указатель
+	pointer := binary.BigEndian.Uint16(encoded)
+	if (pointer & 0xC000) != 0xC000 {
+		t.Errorf("expected compression pointer, got %04x", pointer)
+	}
+
+	// Проверяем счетчик использования
+	count := cmp.GetPointerCount(name)
+	if count != 1 { // 1 от EncodeName
+		t.Errorf("expected pointer count 1, got %d", count)
+	}
+}
+
+func TestConcurrentAddAndEncode(t *testing.T) {
+	cmp := NewCompress()
+	var wg sync.WaitGroup
+
+	names := []string{"example.com", "google.com", "github.com"}
+
+	// Добавляем имена
+	for i, name := range names {
+		wg.Add(1)
+		go func(name string, offset int) {
+			defer wg.Done()
+			cmp.AddName(name, offset)
+		}(name, i*100)
+	}
+
+	wg.Wait()
+
+	// Параллельно кодируем
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(iter int) {
+			defer wg.Done()
+			for _, name := range names {
+				_ = cmp.EncodeName(name, iter*1000)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Проверяем, что все имена существуют
+	for _, name := range names {
+		if _, exists := cmp.GetOffset(name); !exists {
+			t.Errorf("name %s not found after concurrent operations", name)
+		}
+	}
+}

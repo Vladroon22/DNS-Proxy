@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"time"
 
 	"github.com/Vladroon22/DNS-Server/internal/cache"
+	"github.com/Vladroon22/DNS-Server/internal/logger"
 	"github.com/Vladroon22/DNS-Server/internal/message"
 )
 
@@ -21,26 +21,28 @@ const (
 )
 
 type DNSReceiver struct {
-	msg_size int
-	network  string
-	eDNS     bool
-	che      *cache.Cache
+	msgSize int
+	network string
+	eDNS    bool
+	che     *cache.Cache
+	lg      *logger.Logger
 }
 
-func NewDNSReceiver(che *cache.Cache, size int, eDNS bool) *DNSReceiver {
+func NewDNSReceiver(che *cache.Cache, size int, eDNS bool, myLogger *logger.Logger) *DNSReceiver {
 	return &DNSReceiver{
-		eDNS:     eDNS,
-		msg_size: size,
-		che:      che,
+		eDNS:    eDNS,
+		msgSize: size,
+		che:     che,
+		lg:      myLogger,
 	}
 }
 
 func (rcv *DNSReceiver) RequestToGoogleDNS(ctx context.Context, request []byte) ([]byte, error) {
 	if rcv.eDNS {
-		rcv.msg_size = 4096
+		rcv.msgSize = 4096
 		rcv.network = "tcp"
 	} else {
-		rcv.msg_size = 512
+		rcv.msgSize = 512
 		rcv.network = "udp"
 	}
 
@@ -54,22 +56,22 @@ func (rcv *DNSReceiver) RequestToGoogleDNS(ctx context.Context, request []byte) 
 	}
 	defer conn.Close()
 
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	conn.SetDeadline(time.Now().Add(15 * time.Second))
 
 	if _, err := conn.Write(request); err != nil {
-		log.Println("Error of sending request to google:", err)
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("Error of sending request to google: %v", err)})
 		return nil, fmt.Errorf("error of sending request to google: %s", err)
 	}
 
-	data := make([]byte, rcv.msg_size)
+	data := make([]byte, rcv.msgSize)
 	n, err := conn.Read(data)
 	if err != nil {
-		log.Println("Error reading answer from google:", err)
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("Error reading answer from google: %v", err)})
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
 
 	if err := rcv.parseGoogleResponse(ctx, data[:n]); err != nil {
-		log.Println("Error parse answer from google:", err)
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("Error parse answer from google: %v", err)})
 		return nil, fmt.Errorf("error reading answer from google: %s", err)
 	}
 
@@ -77,15 +79,17 @@ func (rcv *DNSReceiver) RequestToGoogleDNS(ctx context.Context, request []byte) 
 }
 
 func (rcv *DNSReceiver) parseGoogleResponse(c context.Context, data []byte) error {
-	_, cancel := context.WithCancel(c)
+	_, cancel := context.WithTimeout(c, 15*time.Second)
 	defer cancel()
 
 	header, err := message.HandleHeader(data[:12])
 	if err != nil {
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("Error google dns: %v", err)})
 		return err
 	}
 
 	if rcv.che == nil {
+		rcv.lg.Log(logger.LogEntry{Info: "nil che"})
 		return fmt.Errorf("nil che")
 	}
 
@@ -94,6 +98,7 @@ func (rcv *DNSReceiver) parseGoogleResponse(c context.Context, data []byte) erro
 		var err error
 		_, offset, err = readName(data, offset, data)
 		if err != nil {
+			rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("Error google dns: %v", err)})
 			return err
 		}
 		offset += 4 // skip QClass and QType
@@ -102,11 +107,13 @@ func (rcv *DNSReceiver) parseGoogleResponse(c context.Context, data []byte) erro
 	for range header.Ancount {
 		name, newOffset, err := readName(data, offset, data)
 		if err != nil {
+			rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("Error google dns: %v", err)})
 			return err
 		}
 		offset = newOffset
 
 		if offset+10 > len(data) {
+			rcv.lg.Log(logger.LogEntry{Info: "Error google dns: wrong answer's format"})
 			return fmt.Errorf("wrong answer's format")
 		}
 
@@ -116,20 +123,20 @@ func (rcv *DNSReceiver) parseGoogleResponse(c context.Context, data []byte) erro
 		length := binary.BigEndian.Uint16(data[offset+8 : offset+10])
 		offset += 10
 
-		log.Println("name:", name)
-		log.Println("class:", Class)
-		log.Println("type:", Type)
-		log.Println("len:", length)
-		log.Println("ttl:", ttl)
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("name: %s", name)})
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("class: %d", Class)})
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("type: %d", Type)})
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("length: %d", length)})
+		rcv.lg.Log(logger.LogEntry{Info: fmt.Sprintf("ttl: %d", ttl)})
 
 		var ip []byte
 		switch Type {
 		case uint16(message.A), uint16(message.AAAA):
 			ip = data[offset : offset+int(length)]
 		default:
+			rcv.lg.Log(logger.LogEntry{Info: "unsupported type of record"})
 			return fmt.Errorf("unsupported type of record")
 		}
-		log.Println("ip:", ip)
 		rcv.che.Set(ip, name, Class, Type, length, ttl)
 		offset += int(length)
 	}

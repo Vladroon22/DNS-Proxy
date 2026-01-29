@@ -1,7 +1,6 @@
 package rate_limiter
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -30,12 +29,9 @@ func NewLimiter(rps int) *Limiter {
 }
 
 func (l *Limiter) StartLimiter() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	l.cleanIncomingIPs(ctx)
-	if len(l.bannedIPs) > 0 {
-		l.cleanBannedIPs(ctx)
+	l.cleanIncomingIPs()
+	if len(l.bannedIPs) > 5 {
+		l.cleanBannedIPs()
 	}
 }
 
@@ -71,7 +67,7 @@ func (l *Limiter) ProcessIP(ip string) (bool, string) {
 	return false, ""
 }
 
-func (l *Limiter) cleanBannedIPs(ctx context.Context) {
+func (l *Limiter) cleanBannedIPs() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -85,14 +81,11 @@ func (l *Limiter) cleanBannedIPs(ctx context.Context) {
 				}
 			}
 			l.mtx.Unlock()
-		case <-ctx.Done():
-			return
 		}
 	}
-
 }
 
-func (l *Limiter) cleanIncomingIPs(ctx context.Context) {
+func (l *Limiter) cleanIncomingIPs() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -105,7 +98,5 @@ func (l *Limiter) cleanIncomingIPs(ctx context.Context) {
 				delete(l.incomingIps, ip)
 			}
 		}
-	case <-ctx.Done():
-		return
 	}
 }

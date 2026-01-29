@@ -28,20 +28,20 @@ const (
 )
 
 type Header struct {
-	ID      uint16
-	Flags   uint16
-	Qdcount uint16
-	Ancount uint16
-	Nscount uint16
-	Arcount uint16
+	ID      uint16 // ID of record
+	Flags   uint16 //
+	Qdcount uint16 // number of questions
+	Ancount uint16 // number of answers
+	Nscount uint16 // number of authority records
+	Arcount uint16 // number of additional records
 }
 
-func HandleHeader(data []byte) (Header, error) {
+func HandleHeader(data []byte) (*Header, error) {
 	if len(data) < 12 {
-		return Header{}, errors.New("DNS message is too short")
+		return &Header{}, errors.New("DNS message is too short")
 	}
 
-	h := Header{
+	h := &Header{
 		ID:      binary.BigEndian.Uint16(data[0:2]),
 		Flags:   binary.BigEndian.Uint16(data[2:4]),
 		Qdcount: binary.BigEndian.Uint16(data[4:6]),
@@ -50,10 +50,10 @@ func HandleHeader(data []byte) (Header, error) {
 		Arcount: binary.BigEndian.Uint16(data[10:12]),
 	}
 
-	QR, OPcode, AA, TC, RD, RA, Z, Rcode := h.parseFlags(&h.Flags)
+	QR, OPcode, AA, TC, RD, RA, Z, Rcode := h.parseFlags()
 
 	if h.Qdcount == 0 {
-		return Header{}, errors.New("QDCOUNT is 0")
+		return &Header{}, errors.New("QDCOUNT is 0")
 	}
 
 	if OPcode != 0 {
@@ -64,56 +64,48 @@ func HandleHeader(data []byte) (Header, error) {
 
 	switch Rcode {
 	case 1:
-		return Header{}, ErrFormatError
+		return nil, ErrFormatError
 	case 2:
-		return Header{}, ErrServerFailure
+		return nil, ErrServerFailure
 	case 3:
-		return Header{}, ErrNameError
+		return nil, ErrNameError
 	case 4:
-		return Header{}, ErrNotImplemented
+		return nil, ErrNotImplemented
 	case 5:
-		return Header{}, ErrRefused
+		return nil, ErrRefused
 	case 6, 7, 8, 9, 10, 11, 12, 13, 14, 15:
-		return Header{}, ErrUnSupported
+		return nil, ErrUnSupported
 	}
 
 	return h, nil
 }
 
-func (h Header) parseFlags(flags *uint16) (QR, OPcode, AA, TC, RD, RA, Z, Rcode uint16) {
-	// QR (15)
-	QR = (*flags >> 15) & 0x1
-	// OPcode (11-14)
-	OPcode = (*flags >> 11) & 0xF
-	// AA (10)
-	AA = (*flags >> 10) & 0x1
-	// TC (9)
-	TC = (*flags >> 9) & 0x1
-	// RD (8)
-	RD = (*flags >> 8) & 0x1
-	// RA (7)
-	RA = (*flags >> 7) & 0x1
-	// Z (4-6)
-	Z = (*flags >> 4) & 0x7
-	// Rcode (0-3)
-	Rcode = *flags & 0xF
+func (h *Header) parseFlags() (QR, OPcode, AA, TC, RD, RA, Z, Rcode uint8) {
+	QR = uint8((h.Flags >> 15) & 1)
+	OPcode = uint8((h.Flags >> 11) & 0xF)
+	AA = uint8((h.Flags >> 10) & 0x1)
+	TC = uint8((h.Flags >> 9) & 0x1)
+	RD = uint8((h.Flags >> 8) & 0x1)
+	RA = uint8((h.Flags >> 7) & 0x1)
+	Z = uint8((h.Flags >> 4) & 0x7)
+	Rcode = uint8(h.Flags & 0xF)
 	return
 }
 
-func (h Header) SetFlags(flags *uint16, QR, OPcode, AA, TC, RD, RA, Z, Rcode uint16) {
-	*flags = 0
+func (h *Header) SetFlags(QR, OPcode, AA, TC, RD, RA, Z, Rcode uint8) {
+	h.Flags = 0
 
-	*flags |= QR << QRBit
-	*flags |= (OPcode & 0xF) << OPcodeBit // Opcode - 4 bits
-	*flags |= AA << AABit
-	*flags |= TC << TCBit
-	*flags |= RD << RDBit
-	*flags |= RA << RABit
-	*flags |= (Z & 0x7) << ZBit // Z - 3 bits
-	*flags |= Rcode & 0xF       // Rcode - 4 bits
+	h.Flags |= uint16(QR&1) << QRBit
+	h.Flags |= uint16(OPcode&0xF) << OPcodeBit
+	h.Flags |= uint16(AA&1) << AABit
+	h.Flags |= uint16(TC&1) << TCBit
+	h.Flags |= uint16(RD&1) << RDBit
+	h.Flags |= uint16(RA&1) << RABit
+	h.Flags |= uint16(Z&0x7) << ZBit
+	h.Flags |= uint16(Rcode & 0xF)
 }
 
-func (h Header) Decode() []byte {
+func (h *Header) Decode() ([]byte, error) {
 	data := bytes.NewBuffer(nil)
 
 	binary.Write(data, binary.BigEndian, h.ID)
@@ -123,5 +115,5 @@ func (h Header) Decode() []byte {
 	binary.Write(data, binary.BigEndian, h.Nscount)
 	binary.Write(data, binary.BigEndian, h.Arcount)
 
-	return data.Bytes()
+	return data.Bytes(), nil
 }
