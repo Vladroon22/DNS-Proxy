@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -83,139 +82,144 @@ func (s *Server) acceptUDP() {
 		}
 
 		go func(c context.Context, buffer []byte, n int, remote *net.UDPAddr) {
-			_, cancel := context.WithTimeout(c, time.Second*40)
+			ctx, cancel := context.WithTimeout(c, time.Second*30)
 			defer func() {
 				bufPool.Put(buffer)
 				cancel()
 			}()
 
-			if isBanned, reason := s.limit.ProcessIP(string(remote.IP)); isBanned {
-				if err := s.sendToClient([]byte(reason), remote); err != nil {
+			select {
+			case <-ctx.Done():
+				if err := s.sendToClient([]byte("Request denied due server's issues"), remote); err != nil {
 					s.logger.Log(logger.LogEntry{Info: err.Error()})
 					return
 				}
 				s.logger.Log(logger.LogEntry{Info: err.Error()})
 				return
-			}
+			default:
 
-			var response bytes.Buffer
-			header, err := message.HandleHeader(buffer[:12])
-			if err != nil {
-				if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
-					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+				if isBanned, reason := s.limit.ProcessIP(string(remote.IP)); isBanned {
+					if err := s.sendToClient([]byte(reason), remote); err != nil {
+						s.logger.Log(logger.LogEntry{Info: err.Error()})
+						return
+					}
+					s.logger.Log(logger.LogEntry{Info: err.Error()})
 					return
 				}
-				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
-				return
-			}
 
-			s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Request header: %v", header)})
-			s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("questions: %d", header.Qdcount)})
-
-			questions, n, err := message.HandleQuestions(buffer[:b], header.Qdcount, s.cache)
-			if err != nil {
-				if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
-					return
-				}
-				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
-				return
-			}
-
-			builder := message.NewResponseBuilder()
-
-			switch n {
-			case 0:
-				GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(c, buffer)
+				var response bytes.Buffer
+				header, err := message.HandleHeader(buffer[:12])
 				if err != nil {
 					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
 						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						return
 					}
 					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
 					return
 				}
 
-				if len(GoogleAnswer) >= 4 {
-					flags := binary.BigEndian.Uint16(GoogleAnswer[2:4])
-					flags |= (1 << 7)
-					binary.BigEndian.PutUint16(GoogleAnswer[2:4], flags)
-				}
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Request header: %v", header)})
+				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("questions: %d", header.Qdcount)})
 
-				if _, err := response.Write(GoogleAnswer); err != nil {
+				questions, n, err := message.HandleQuestions(buffer[:b], header.Qdcount, s.cache)
+				if err != nil {
 					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
-						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						return
 					}
 					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
 					return
 				}
 
-				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Google: %v", GoogleAnswer)})
-			case 1:
-				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Cache questions: %v", questions[0])})
+				builder := message.NewResponseBuilder()
 
-				header.Ancount = 1
-				header.Qdcount = 1
-				header.Arcount = 0
-				header.Nscount = 0
-
-				header.SetFlags(1, 0, 0, 0, 0, 1, 0, 0)
-				resp := builder.BuildResponse(header, questions[0], s.cache)
-				if resp.Err != nil {
-					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
-						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
-					}
-					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: response builder error: %s", err)})
-					return
-				}
-
-				if _, err := response.Write(resp.Data); err != nil {
-					if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
-						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
-					}
-					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
-					return
-				}
-
-			default:
-				for _, que := range questions {
-					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Cache question: %v", que)})
-				}
-
-				header.SetFlags(1, 0, 0, 0, 1, 1, 0, 0)
-				header.Qdcount = uint16(n)
-
-				wg := &sync.WaitGroup{}
-				respChan := make(chan message.Response, n)
-				for _, que := range questions {
-					wg.Add(1)
-					go func(que message.Question) {
-						defer wg.Done()
-						respChan <- builder.BuildResponse(header, que, s.cache)
-					}(que)
-				}
-
-				go func() {
-					close(respChan)
-					wg.Wait()
-				}()
-
-				for resp := range respChan {
-					if resp.Err != nil {
+				switch n {
+				case 0:
+					GoogleAnswer, err := GoogleDNS.RequestToGoogleDNS(c, buffer)
+					if err != nil {
 						if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
 							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
 						}
-						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Builder response: %v", err)})
-						continue
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						return
+					}
+
+					if _, err := response.Write(GoogleAnswer); err != nil {
+						if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						}
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						return
+					}
+
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Google: %v", GoogleAnswer)})
+				case 1:
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Cache questions: %v", questions[0])})
+
+					header.Ancount = 1
+					header.Qdcount = 1
+					header.Arcount = 0
+					header.Nscount = 0
+
+					header.SetFlags(1, 0, 0, 0, 0, 1, 0, 0)
+					resp := builder.BuildResponse(header, questions[0], s.cache)
+					if resp.Err != nil {
+						if err := s.sendToClient([]byte(resp.Err.Error()), remote); err != nil {
+							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						}
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: response builder error: %s", err)})
+						return
 					}
 
 					if _, err := response.Write(resp.Data); err != nil {
-						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("response error: %s", err.Error())})
+						if err := s.sendToClient([]byte(err.Error()), remote); err != nil {
+							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						}
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+						return
+					}
+
+				default:
+					for _, que := range questions {
+						s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Cache question: %v", que)})
+					}
+
+					header.SetFlags(1, 0, 0, 0, 1, 1, 0, 0)
+					header.Qdcount = uint16(n)
+
+					wg := &sync.WaitGroup{}
+					respChan := make(chan message.Response, n)
+					for _, que := range questions {
+						wg.Add(1)
+						go func(que message.Question) {
+							defer wg.Done()
+							respChan <- builder.BuildResponse(header, que, s.cache)
+						}(que)
+					}
+
+					go func() {
+						close(respChan)
+						wg.Wait()
+					}()
+
+					for resp := range respChan {
+						if resp.Err != nil {
+							if err := s.sendToClient([]byte(resp.Err.Error()), remote); err != nil {
+								s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+							}
+							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Builder response: %v", err)})
+							continue
+						}
+
+						if _, err := response.Write(resp.Data); err != nil {
+							s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("response error: %s", err.Error())})
+						}
 					}
 				}
-			}
 
-			if err := s.sendToClient(response.Bytes(), remote); err != nil {
-				s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
-				return
+				if err := s.sendToClient(response.Bytes(), remote); err != nil {
+					s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("Error: %v", err)})
+					return
+				}
 			}
 
 		}(context.Background(), buf, b, remote)
@@ -223,6 +227,22 @@ func (s *Server) acceptUDP() {
 	}
 }
 
-func (s *Server) CloseUDP() error {
-	return s.udpConn.Close()
+func (s *Server) CloseUDP(c context.Context) error {
+	ctx, cancel := context.WithTimeout(c, time.Second*15)
+	defer cancel()
+
+	timer := time.NewTimer(time.Second * 15)
+
+	select {
+	case <-timer.C:
+		return fmt.Errorf("timeout")
+	case <-ctx.Done():
+		return fmt.Errorf("ctx timeout")
+	default:
+		if err := s.udpConn.Close(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

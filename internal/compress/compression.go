@@ -24,8 +24,8 @@ func NewCompress() *Compress {
 }
 
 func (c *Compress) AddName(name string, offset int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	if info, exists := c.names[name]; exists {
 		info.pointer++
@@ -50,9 +50,9 @@ func (c *Compress) EncodeName(name string, currOffset int) []byte {
 	c.mu.RUnlock()
 
 	if exists && info.offset < currOffset {
-		c.mu.Lock()
+		c.mu.RLock()
 		info.pointer++
-		c.mu.Unlock()
+		c.mu.RUnlock()
 
 		pointer := make([]byte, 2)
 		binary.BigEndian.PutUint16(pointer, uint16(0xC000|info.offset))
@@ -97,8 +97,8 @@ func (c *Compress) GetOffset(name string) (int, bool) {
 }
 
 func (c *Compress) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
 	c.names = make(map[string]*domainInfo)
 }

@@ -13,11 +13,8 @@ import (
 	"github.com/Vladroon22/DNS-Server/internal/message"
 )
 
-const (
-	DNSv1 = "8.8.8.8:53"
-	DNSv2 = "8.8.4.4:53"
-	DNSv3 = "1.1.1.1:53"
-	DNSv4 = "8.8.8.8:853"
+var (
+	DNSServers = []string{"1.1.1.1:53", "8.8.8.8:853", "8.8.4.4:53"}
 )
 
 type DNSReceiver struct {
@@ -47,7 +44,7 @@ func (rcv *DNSReceiver) RequestToGoogleDNS(ctx context.Context, request []byte) 
 	}
 
 	var conn net.Conn
-	for _, dns := range []string{DNSv1, DNSv2, DNSv3, DNSv4} {
+	for _, dns := range DNSServers {
 		var err error
 		conn, err = net.DialTimeout(rcv.network, dns, 5*time.Second)
 		if err == nil {

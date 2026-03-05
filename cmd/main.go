@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -51,7 +52,7 @@ func main() {
 	case sig := <-stopOSChan:
 		myLogger.Log(logger.LogEntry{Info: fmt.Sprintf("Received %v signal, shutting down...", sig)})
 
-		if err := srv.CloseUDP(); err != nil {
+		if err := srv.CloseUDP(context.Background()); err != nil {
 			myLogger.Log(logger.LogEntry{Info: fmt.Sprintf("DNS shutdown error: %v", err)})
 		}
 	}

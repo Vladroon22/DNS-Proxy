@@ -36,9 +36,14 @@ type Header struct {
 	Arcount uint16 // number of additional records
 }
 
+const (
+	ErrShortMsg    = "DNS message is too short"
+	ErrQdcountZero = "QDCOUNT is 0"
+)
+
 func HandleHeader(data []byte) (*Header, error) {
 	if len(data) < 12 {
-		return &Header{}, errors.New("DNS message is too short")
+		return &Header{}, errors.New(ErrShortMsg)
 	}
 
 	h := &Header{
@@ -53,7 +58,7 @@ func HandleHeader(data []byte) (*Header, error) {
 	QR, OPcode, AA, TC, RD, RA, Z, Rcode := h.parseFlags()
 
 	if h.Qdcount == 0 {
-		return &Header{}, errors.New("QDCOUNT is 0")
+		return &Header{}, errors.New(ErrQdcountZero)
 	}
 
 	if OPcode != 0 {
@@ -92,7 +97,7 @@ func (h *Header) parseFlags() (QR, OPcode, AA, TC, RD, RA, Z, Rcode uint8) {
 	return
 }
 
-func (h *Header) SetFlags(QR, OPcode, AA, TC, RD, RA, Z, Rcode uint8) {
+func (h *Header) SetFlags(QR, OPcode, AA, TC, RD, RA, Z, Rcode uint8) uint16 {
 	h.Flags = 0
 
 	h.Flags |= uint16(QR&1) << QRBit
@@ -103,6 +108,8 @@ func (h *Header) SetFlags(QR, OPcode, AA, TC, RD, RA, Z, Rcode uint8) {
 	h.Flags |= uint16(RA&1) << RABit
 	h.Flags |= uint16(Z&0x7) << ZBit
 	h.Flags |= uint16(Rcode & 0xF)
+
+	return h.Flags
 }
 
 func (h *Header) Decode() ([]byte, error) {
