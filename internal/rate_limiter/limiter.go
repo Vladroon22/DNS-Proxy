@@ -17,6 +17,7 @@ type Limiter struct {
 	bannedIPs   map[string]time.Time
 	mtx         sync.RWMutex
 	limit       int
+	exitCh      chan struct{}
 }
 
 func NewLimiter(rps int) *Limiter {
@@ -25,12 +26,12 @@ func NewLimiter(rps int) *Limiter {
 		bannedIPs:   make(map[string]time.Time),
 		mtx:         sync.RWMutex{},
 		limit:       rps,
+		exitCh:      make(chan struct{}),
 	}
 }
 
 func (l *Limiter) StartLimiter() {
-	l.cleanIncomingIPs()
-	l.cleanBannedIPs()
+	l.cleanIPs()
 }
 
 func (l *Limiter) ProcessIP(ip string) (bool, string) {
@@ -61,42 +62,45 @@ func (l *Limiter) ProcessIP(ip string) (bool, string) {
 	return false, ""
 }
 
-func (l *Limiter) cleanBannedIPs() {
+func (l *Limiter) cleanIPs() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
 		select {
 		case <-ticker.C:
-			l.mtx.RLock()
-			for ip, tm := range l.bannedIPs {
-				if time.Since(tm) <= 0.0 {
-					delete(l.bannedIPs, ip)
-				}
-			}
-			l.mtx.RUnlock()
-		default:
-			continue
+			l.cleanIncomingIPs()
+			l.cleanBannedIPs()
+		case <-l.exitCh:
+			return
+		}
+	}
+}
+
+func (l *Limiter) cleanBannedIPs() {
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+
+	for ip, tm := range l.bannedIPs {
+		if time.Since(tm) <= 0.0 {
+			delete(l.bannedIPs, ip)
 		}
 	}
 }
 
 func (l *Limiter) cleanIncomingIPs() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+	now := time.Now()
 
-	for range ticker.C {
-		select {
-		case <-ticker.C:
-			l.mtx.RLock()
-			defer l.mtx.RUnlock()
-			for ip, rps := range l.incomingIps {
-				if rps.lastRequest.Before(time.Now().Add(-time.Second)) {
-					delete(l.incomingIps, ip)
-				}
-			}
-		default:
-			continue
+	l.mtx.Lock()
+	defer l.mtx.Unlock()
+
+	for ip, rps := range l.incomingIps {
+		if rps.lastRequest.Before(now.Add(-time.Second)) {
+			delete(l.incomingIps, ip)
 		}
 	}
+}
+
+func (l *Limiter) Close() {
+	l.exitCh <- struct{}{}
 }

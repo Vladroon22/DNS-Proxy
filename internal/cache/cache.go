@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -17,14 +16,16 @@ type Item struct {
 }
 
 type Cache struct {
-	cache map[string]*Item
-	mtx   sync.RWMutex
+	cache  map[string]*Item
+	mtx    sync.RWMutex
+	exitCh chan struct{}
 }
 
 func InitCache() *Cache {
 	chc := &Cache{
-		cache: make(map[string]*Item),
-		mtx:   sync.RWMutex{},
+		cache:  make(map[string]*Item),
+		mtx:    sync.RWMutex{},
+		exitCh: make(chan struct{}),
 	}
 	go chc.cleanRecords()
 
@@ -32,12 +33,12 @@ func InitCache() *Cache {
 }
 
 func (c *Cache) Set(ip []byte, name string, class, tp, len uint16, ttl uint32) {
-	c.mtx.Lock()
-	defer c.mtx.Unlock()
-
 	if c.cache == nil {
 		c.cache = make(map[string]*Item)
 	}
+
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
 
 	item := &Item{
 		IP:     ip,
@@ -65,28 +66,32 @@ func (c *Cache) Get(tp uint16, dmn string) (Item, bool) {
 }
 
 func (c *Cache) cleanRecords() {
-	if c.cache == nil {
-		log.Println("cache is nil")
-		return
-	}
-
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-
-	now := time.Now()
 
 	for {
 		select {
 		case <-ticker.C:
-			c.mtx.RLock()
-			for name, item := range c.cache {
-				if item.Exp.Before(now) {
-					delete(c.cache, name)
-				}
-			}
-			c.mtx.RUnlock()
-		default:
-			continue
+			c.cleanExpired()
+		case <-c.exitCh:
+			return
 		}
 	}
+}
+
+func (c *Cache) cleanExpired() {
+	now := time.Now()
+
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+
+	for name, item := range c.cache {
+		if item.Exp.Before(now) {
+			delete(c.cache, name)
+		}
+	}
+}
+
+func (c *Cache) Close() {
+	c.exitCh <- struct{}{}
 }

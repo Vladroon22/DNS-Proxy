@@ -23,8 +23,6 @@ type Server struct {
 	udpAddr       *net.UDPAddr
 	limit         *rate_limiter.Limiter
 	logger        *logger.Logger
-	// tcpaddr *net.TCPAddr
-	//	tcpconn *net.TCPListener
 }
 
 func DNSServer(udp *net.UDPAddr, rate int, lg *logger.Logger) *Server {
@@ -227,18 +225,18 @@ func (s *Server) acceptUDP() {
 	}
 }
 
-func (s *Server) CloseUDP(c context.Context) error {
-	ctx, cancel := context.WithTimeout(c, time.Second*15)
-	defer cancel()
-
+func (s *Server) CloseUDP() error {
 	timer := time.NewTimer(time.Second * 15)
+	defer timer.Stop()
 
 	select {
 	case <-timer.C:
-		return fmt.Errorf("timeout")
-	case <-ctx.Done():
-		return fmt.Errorf("ctx timeout")
+		if timer.Stop() {
+			return fmt.Errorf("timeout")
+		}
 	default:
+		s.limit.Close()
+		s.cache.Close()
 		if err := s.udpConn.Close(); err != nil {
 			return err
 		}
