@@ -23,6 +23,8 @@ type Server struct {
 	udpAddr       *net.UDPAddr
 	limit         *rate_limiter.Limiter
 	logger        *logger.Logger
+	exitCh        chan struct{}
+	wg            *sync.WaitGroup
 }
 
 func DNSServer(udp *net.UDPAddr, rate int, lg *logger.Logger) *Server {
@@ -32,6 +34,8 @@ func DNSServer(udp *net.UDPAddr, rate int, lg *logger.Logger) *Server {
 		limit:         rate_limiter.NewLimiter(rate),
 		isEnabledEDNS: false,
 		logger:        lg,
+		exitCh:        make(chan struct{}, 1),
+		wg:            &sync.WaitGroup{},
 	}
 }
 
@@ -75,18 +79,29 @@ func (s *Server) acceptUDP() {
 		buf := bufPool.Get().([]byte)
 		b, remote, err := s.udpConn.ReadFromUDP(buf)
 		if err != nil {
+			bufPool.Put(buf)
 			s.logger.Log(logger.LogEntry{Info: err.Error()})
 			return
 		}
 
+		s.wg.Add(1)
 		go func(c context.Context, buffer []byte, n int, remote *net.UDPAddr) {
-			ctx, cancel := context.WithTimeout(c, time.Second*30)
 			defer func() {
+				s.wg.Done()
 				bufPool.Put(buffer)
-				cancel()
+				if r := recover(); r != nil {
+					s.logger.Log(logger.LogEntry{
+						Info: fmt.Sprintf("panic recovered: %v", r),
+					})
+				}
 			}()
 
+			ctx, cancel := context.WithTimeout(c, time.Second*30)
+			defer cancel()
+
 			select {
+			case <-s.exitCh:
+				return
 			case <-ctx.Done():
 				if err := s.sendToClient([]byte("Request denied due server's issues"), remote); err != nil {
 					s.logger.Log(logger.LogEntry{Info: err.Error()})
@@ -226,19 +241,28 @@ func (s *Server) acceptUDP() {
 }
 
 func (s *Server) CloseUDP() error {
-	timer := time.NewTimer(time.Second * 15)
-	defer timer.Stop()
+	close(s.exitCh)
+
+	if err := s.udpConn.Close(); err != nil {
+		s.logger.Log(logger.LogEntry{Info: fmt.Sprintf("%v", err)})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
 
 	select {
-	case <-timer.C:
-		if timer.Stop() {
-			return fmt.Errorf("timeout")
-		}
+	case <-time.After(15 * time.Second):
+		return fmt.Errorf("shutdown timeout")
 	default:
-		s.limit.Close()
-		s.cache.Close()
-		if err := s.udpConn.Close(); err != nil {
-			return err
+		if s.limit != nil {
+			s.limit.Close()
+		}
+
+		if s.cache != nil {
+			s.cache.Close()
 		}
 	}
 
